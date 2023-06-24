@@ -20,17 +20,44 @@ use tower_service::Service;
 pub struct LoggerConfig {
     pub log_level_filter: Arc<dyn Fn(&str) -> log::Level + Send + Sync>,
     pub honor_xff: bool,
+    #[cfg(feature = "prometheus")]
     pub metric_name: String,
 }
 
 #[derive(Clone)]
-pub struct LoggerLayer(pub LoggerConfig);
+pub struct LoggerLayer {
+    config: LoggerConfig,
+    #[cfg(feature = "prometheus")]
+    metric: Arc<HistogramVec>,
+}
+
+impl LoggerLayer {
+    pub fn new(config: LoggerConfig) -> Self {
+        Self {
+            #[cfg(feature = "prometheus")]
+            metric: Arc::new(
+                register_histogram_vec!(
+                    &config.metric_name,
+                    "status, elapsed time, and count of responses",
+                    &["route", "status"]
+                )
+                .unwrap(),
+            ),
+            config,
+        }
+    }
+}
 
 impl<S> Layer<S> for LoggerLayer {
     type Service = Logger<S>;
 
     fn layer(&self, service: S) -> Self::Service {
-        Logger::new(self.0.clone(), service)
+        Logger::new(
+            self.config.clone(),
+            #[cfg(feature = "prometheus")]
+            self.metric.clone(),
+            service,
+        )
     }
 }
 
@@ -43,17 +70,14 @@ pub struct Logger<S> {
 }
 
 impl<S> Logger<S> {
-    pub fn new(config: LoggerConfig, inner: S) -> Self {
+    pub fn new(
+        config: LoggerConfig,
+        #[cfg(feature = "prometheus")] metric: Arc<HistogramVec>,
+        inner: S,
+    ) -> Self {
         Self {
             #[cfg(feature = "prometheus")]
-            metric: Arc::new(
-                register_histogram_vec!(
-                    &config.metric_name,
-                    "status, elapsed time, and count of responses",
-                    &["route", "status"]
-                )
-                .unwrap(),
-            ),
+            metric,
             config,
             inner,
         }
